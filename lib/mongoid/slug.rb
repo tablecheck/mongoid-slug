@@ -2,6 +2,7 @@ require 'mongoid'
 require 'stringex'
 require 'mongoid/slug/criteria'
 require 'mongoid/slug/index'
+require 'mongoid/slug/paranoia'
 require 'mongoid/slug/unique_slug'
 require 'mongoid/slug/slug_id_strategy'
 require 'mongoid-compatibility'
@@ -96,6 +97,19 @@ module Mongoid
         else
           set_callback :save, :before, :build_slug, if: :slug_should_be_rebuilt?
         end
+
+        # If paranoid document:
+        # - include shim to add callbacks for restore method
+        # - unset the slugs on destroy
+        # - recreate the slug on restore
+        # - force reset the slug when saving a destroyed paranoid document, to ensure it stays unset in the database
+        if is_paranoid_doc?
+          send(:include, Mongoid::Slug::Paranoia) unless respond_to?(:before_restore)
+          set_callback :destroy, :after,  :unset_slug!
+          set_callback :restore, :before, :set_slug!
+          set_callback :save,    :before, :reset_slug!, if: :paranoid_deleted?
+          set_callback :save,    :after,  :clear_slug!, if: :paranoid_deleted?
+        end
       end
 
       def default_slug_url_builder
@@ -137,6 +151,10 @@ module Mongoid
 
       def queryable
         current_scope || Criteria.new(self) # Use Mongoid::Slug::Criteria for slugged documents.
+      end
+
+      def is_paranoid_doc?
+        !!(defined?(::Mongoid::Paranoia) && self < ::Mongoid::Paranoia)
       end
 
       private
@@ -233,7 +251,11 @@ module Mongoid
 
     # @return [Boolean] Whether the slug requires to be rebuilt
     def slug_should_be_rebuilt?
-      new_record? || _slugs_changed? || slugged_attributes_changed?
+      (new_record? || _slugs_changed? || slugged_attributes_changed?) && !paranoid_deleted?
+    end
+
+    def paranoid_deleted?
+      !!(self.class.is_paranoid_doc? && !deleted_at.nil?)
     end
 
     def slugged_attributes_changed?
